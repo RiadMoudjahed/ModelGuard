@@ -50,8 +50,8 @@ ModelGuard is a comprehensive security analysis tool that scans AI/ML models for
 
 ```bash
 # Clone the repository
-git clone https://github.com/RiadMoudjahed/modelguard.git
-cd modelguard
+git clone https://github.com/RiadMoudjahed/ModelGuard.git
+cd ModelGuard
 
 # Install Python dependencies
 pip install requests
