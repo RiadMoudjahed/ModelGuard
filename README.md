@@ -433,6 +433,7 @@ modelguard/
 ├── modelguard_advanced.py     # GGUF, metadata, source analysis
 ├── modelguard_ollama.py       # AI-powered analysis via Ollama
 ├── modelguard_reports.py      # Multi-format report generation
+├── requirements.txt           # Requirements file
 └── ollama_connection_diagnostics.py  # Diagnostic tool
 ```
 
@@ -467,7 +468,7 @@ Contributions are welcome! Here's how you can help:
 
 ```bash
 # Clone repository
-git clone https://github.com/RiadMoudjahed/modelguard.git
+git clone https://github.com/RiadMoudjahed/ModelGuard.git
 cd modelguard
 
 # Install dev dependencies
@@ -523,29 +524,6 @@ ModelGuard is a security tool designed to help identify threats in AI models. Wh
 - ❌ Don't load models with CRITICAL findings
 
 **Use at your own risk. The authors are not responsible for any damage caused by malicious models.**
-
-
----
-
-## 🎯 Roadmap
-
-### Version 1.1 (Q1 2026)
-- [ ] Support for more model formats (CoreML, TFLite)
-- [ ] Behavioral analysis via sandboxing
-- [ ] Machine learning-based threat detection
-- [ ] Web UI for easier scanning
-
-### Version 1.2 (Q2 2026)
-- [ ] Real-time monitoring mode
-- [ ] Integration with model registries
-- [ ] Automated vulnerability database
-- [ ] Community threat intelligence sharing
-
-### Version 2.0 (Q3 2026)
-- [ ] Cloud-based scanning service
-- [ ] Enterprise features (team collaboration, compliance reports)
-- [ ] Advanced static analysis
-- [ ] Model signing and verification
 
 ---
 
