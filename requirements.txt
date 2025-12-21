@@ -1,0 +1,15 @@
+# ModelGuard Requirements
+# Install with: pip install -r requirements.txt
+
+# Core Dependencies (Required)
+# None - ModelGuard core uses only Python standard library
+
+# Optional Dependencies (Recommended)
+torch>=2.0.0          # For advanced PyTorch model analysis
+numpy>=1.20.0         # For numerical operations and weight analysis
+requests>=2.28.0      # For HuggingFace API and Ollama communication
+
+# Development Dependencies (Optional)
+# pytest>=7.0.0       # For running tests
+# black>=22.0.0       # For code formatting
+# mypy>=0.990         # For type checking
