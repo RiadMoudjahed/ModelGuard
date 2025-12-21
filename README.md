@@ -1,6 +1,14 @@
-# 🛡️ ModelGuard - AI Model Security Scanner
-
 <div align="center">
+  
+  # 🛡️ ModelGuard - AI Model Security Scanner
+
+  
+  <img
+    width="480"
+    height="480"
+    alt="Image"
+    src="https://github.com/user-attachments/assets/2317e552-fa9d-4af1-9e89-95a40127ac29"
+  />
 
 **Professional-grade security scanning for AI/ML models with AI-powered threat analysis**
   
