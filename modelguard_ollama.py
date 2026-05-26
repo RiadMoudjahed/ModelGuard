@@ -53,7 +53,7 @@ class OllamaAnalyzer:
                 self._log(f"Version endpoint returned {response.status_code}, trying alternatives...")
         except requests.exceptions.ConnectionError:
             self.error_message = (
-                "Cannot connect to Ollama server at {self.base_url}\n"
+                f"Cannot connect to Ollama server at {self.base_url}\n"
                 "Is Ollama running? Start with: ollama serve\n"
                 "Or check if it's running on a different port."
             )
