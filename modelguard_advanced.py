@@ -1,5 +1,5 @@
 """
-ModelGuard - Advanced Analyzers (FIXED)
+ModelGuard - Advanced Analyzers
 GGUF, Metadata, Source Trust, and Weight Analysis
 """
 
@@ -26,19 +26,41 @@ class GGUFAnalyzer:
         'general.', 'tokenizer.', 'llama.', 'mistral.', 'phi.', 'gpt.',
         'qwen.', 'gemma.', 'mpt.', 'falcon.', 'bloom.', 'opt.',
         'gptneox.', 'stablelm.', 'persimmon.', 'refact.', 'bert.',
-        'nomic.', 'jina.', 'command-r.', 'dbrx.', 'olmo.', 'arctic.'
+        'nomic.', 'jina.', 'command-r.', 'dbrx.', 'olmo.', 'arctic.',
+        'qwen2.', 'qwen2moe.', 'qwen3.', 'qwen3moe.', 'phi2.', 'phi3.',
+        'gemma2.', 'gemma3.', 'llama4.', 'deepseek.', 'deepseek2.',
+        'starcoder.', 'starcoder2.', 'granite.', 'olmo2.', 'cohere2.',
+        'mamba.', 'rwkv6.', 'gpt-oss.', 'gptoss.', 'quantize.', 'split.'
     }
+
+    # GGUF value types (see the GGUF specification)
+    GGUF_SCALAR_SIZES = {
+        0: 1, 1: 1,    # uint8, int8
+        2: 2, 3: 2,    # uint16, int16
+        4: 4, 5: 4,    # uint32, int32
+        6: 4,          # float32
+        7: 1,          # bool
+        10: 8, 11: 8,  # uint64, int64
+        12: 8,         # float64
+    }
+    GGUF_SCALAR_FORMATS = {
+        0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i',
+        6: '<f', 7: '<?', 10: '<Q', 11: '<q', 12: '<d',
+    }
+    GGUF_TYPE_STRING = 8
+    GGUF_TYPE_ARRAY = 9
 
     # Dangerous patterns: Only flag EXECUTABLE code patterns
     DANGEROUS_PATTERNS = [
         # Code execution functions with parentheses (actual calls)
         (r'eval\s*\([\'"].*?[\'"].*?\)', 'eval() function call'),
         (r'exec\s*\([\'"].*?[\'"].*?\)', 'exec() function call'),
-        (r'__import__\s*\([\'"]os[\'"]|[\'"]subprocess[\'"]', 'dangerous module import'),
+        (r'__import__\s*\(\s*[\'"](?:os|subprocess)[\'"]', 'dangerous module import'),
         (r'compile\s*\([\'"].*?[\'"].*?[\'"]exec[\'"]', 'compile() with exec mode'),
 
         # System commands
         (r'os\.system\s*\(', 'os.system() call'),
+        (r'os\.popen\s*\(', 'os.popen() call'),
         (r'subprocess\.(run|Popen|call)\s*\(', 'subprocess execution'),
         (r'shell\s*=\s*True', 'shell command execution'),
 
@@ -49,7 +71,14 @@ class GGUFAnalyzer:
         # Base64 decode + exec pattern (common in malware)
         (r'base64\.b64decode.*?exec', 'base64 decode with exec'),
         (r'zlib\.decompress.*?exec', 'compressed code execution'),
+
+        # Jinja2 sandbox escapes in chat templates (CVE-2024-34359)
+        (r'__(?:globals|builtins|subclasses|mro|class)__', 'Python object introspection (template injection)'),
     ]
+
+    # Keys that are always fully checked even though they use a standard prefix,
+    # because they are rendered/executed by loaders (e.g. Jinja2 chat templates)
+    ALWAYS_CHECK_KEYS = ('tokenizer.chat_template',)
 
     def __init__(self):
         self.findings = []
@@ -89,9 +118,11 @@ class GGUFAnalyzer:
                         recommendation="Ensure your GGUF loader supports this version"
                     ))
 
-                # Read tensor count and metadata count
-                tensor_count = struct.unpack('<Q', f.read(8))[0]
-                metadata_count = struct.unpack('<Q', f.read(8))[0]
+                # Read tensor count and metadata count (uint32 in GGUF v1, uint64 later)
+                self._len_fmt = '<I' if version == 1 else '<Q'
+                len_size = struct.calcsize(self._len_fmt)
+                tensor_count = struct.unpack(self._len_fmt, f.read(len_size))[0]
+                metadata_count = struct.unpack(self._len_fmt, f.read(len_size))[0]
 
                 metadata['tensor_count'] = tensor_count
                 metadata['metadata_entries'] = metadata_count
@@ -123,35 +154,57 @@ class GGUFAnalyzer:
 
         return self.findings, metadata
 
+    def _read_len(self, f) -> int:
+        fmt = getattr(self, '_len_fmt', '<Q')
+        raw = f.read(struct.calcsize(fmt))
+        if len(raw) != struct.calcsize(fmt):
+            raise EOFError("Unexpected end of GGUF metadata")
+        return struct.unpack(fmt, raw)[0]
+
+    def _read_string(self, f, max_len: int = 1024 * 1024) -> str:
+        length = self._read_len(f)
+        if length > max_len:
+            f.seek(length, 1)
+            return f"<large_string:{length}>"
+        return f.read(length).decode('utf-8', errors='ignore')
+
+    def _read_value(self, f, value_type: int) -> Any:
+        """Read a single GGUF value, advancing the file position correctly"""
+        if value_type == self.GGUF_TYPE_STRING:
+            return self._read_string(f)
+
+        if value_type in self.GGUF_SCALAR_FORMATS:
+            fmt = self.GGUF_SCALAR_FORMATS[value_type]
+            return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
+
+        if value_type == self.GGUF_TYPE_ARRAY:
+            elem_type = struct.unpack('<I', f.read(4))[0]
+            count = self._read_len(f)
+            if elem_type in self.GGUF_SCALAR_SIZES:
+                # Skip fixed-size arrays without reading them
+                f.seek(self.GGUF_SCALAR_SIZES[elem_type] * count, 1)
+            else:
+                # String/nested arrays (e.g. tokenizer vocab) must be walked
+                for _ in range(count):
+                    self._read_value(f, elem_type)
+            return f"<array:{count}>"
+
+        raise ValueError(f"Unknown GGUF value type: {value_type}")
+
     def _read_metadata(self, f, count: int) -> Dict[str, Any]:
-        """Read GGUF metadata entries (simplified)"""
+        """Read GGUF metadata key/value entries"""
         metadata = {}
 
         try:
-            for _ in range(min(count, 100)):  # Limit to first 100 entries
-                # Read key length and key
-                key_len = struct.unpack('<Q', f.read(8))[0]
-                if key_len > 1024:  # Sanity check
+            for _ in range(min(count, 10000)):  # Sanity limit
+                key = self._read_string(f, max_len=1024)
+                if key.startswith('<large_string:'):
                     break
-                key = f.read(key_len).decode('utf-8', errors='ignore')
-
-                # Read value type
                 value_type = struct.unpack('<I', f.read(4))[0]
-
-                # Read value based on type (simplified)
-                if value_type == 8:  # String
-                    val_len = struct.unpack('<Q', f.read(8))[0]
-                    if val_len > 10240:  # Limit string size
-                        value = f"<large_string:{val_len}>"
-                        f.seek(val_len, 1)
-                    else:
-                        value = f.read(val_len).decode('utf-8', errors='ignore')
-                    metadata[key] = value
-                else:
-                    # Skip other types for simplicity
-                    pass
+                metadata[key] = self._read_value(f, value_type)
 
         except Exception:
+            # Truncated or malformed metadata: keep what was read so far
             pass
 
         return metadata
@@ -159,13 +212,24 @@ class GGUFAnalyzer:
     def _check_metadata_security(self, metadata: Dict[str, Any]):
         """Check GGUF metadata for security issues using smart detection"""
         from modelguard_core import SecurityFinding, SeverityLevel
-        import math
+
+        # The model's own architecture prefix (e.g. "qwen3.") is standard metadata too
+        safe_prefixes = set(self.SAFE_METADATA_PREFIXES)
+        arch = metadata.get('general.architecture')
+        if isinstance(arch, str) and arch:
+            safe_prefixes.add(f"{arch}.")
 
         for key, value in metadata.items():
-            # Smart Technique #1: Whitelist standard metadata prefixes
-            is_standard_metadata = any(key.startswith(prefix) for prefix in self.SAFE_METADATA_PREFIXES)
+            # Only text values can carry code; numbers and skipped arrays are safe
+            if not isinstance(value, str) or value.startswith(('<array:', '<large_string:')):
+                continue
 
-            if is_standard_metadata and isinstance(value, str) and len(value) < 1000:
+            # Smart Technique #1: Whitelist standard metadata prefixes
+            is_standard_metadata = any(key.startswith(prefix) for prefix in safe_prefixes)
+
+            always_check = key.startswith(self.ALWAYS_CHECK_KEYS)
+
+            if is_standard_metadata and not always_check and len(value) < 1000:
                 # Standard metadata with reasonable length - skip detailed checks
                 continue
 
@@ -403,17 +467,19 @@ class MetadataValidator:
 class SourceTrustAnalyzer:
     """Analyzes model source trustworthiness"""
 
+    # Compared case-insensitively (HuggingFace org names are lowercased before lookup)
     TRUSTED_ORGS = {
-        'openai', 'google', 'meta', 'microsoft', 'anthropic',
-        'huggingface', 'stabilityai', 'eleutherai', 'bigscience',
-        'facebook', 'nvidia', 'mistralai', 'cohere', 'databricks',
-        'apple', 'deepmind', 'together', 'allenai'
+        'openai', 'google', 'meta', 'meta-llama', 'microsoft', 'anthropic',
+        'huggingface', 'huggingfacetb', 'stabilityai', 'eleutherai', 'bigscience',
+        'facebook', 'nvidia', 'mistralai', 'cohere', 'coherelabs', 'databricks',
+        'apple', 'deepmind', 'google-bert', 'together', 'togethercomputer',
+        'allenai', 'qwen', 'deepseek-ai', 'ibm-granite', 'tiiuae', 'amazon'
     }
 
     VERIFIED_PUBLISHERS = {
-        'TheBloke', 'stabilityai', 'runwayml', 'CompVis',
-        'bartowski', 'NousResearch', 'teknium', 'Phind',
-        'WizardLM', 'lmsys', 'mosaicml'
+        'thebloke', 'runwayml', 'compvis', 'bartowski', 'nousresearch',
+        'teknium', 'phind', 'wizardlm', 'lmsys', 'mosaicml', 'unsloth',
+        'lmstudio-community', 'ggml-org', 'mlx-community', 'sentence-transformers'
     }
 
     def __init__(self):
@@ -427,8 +493,8 @@ class SourceTrustAnalyzer:
         trust_score = 50.0  # Start neutral
 
         # Check author/organization
-        author = model_info.get('author', '').lower()
-        org = model_info.get('organization', '').lower()
+        author = (model_info.get('author') or '').lower()
+        org = (model_info.get('organization') or '').lower()
 
         if author in self.TRUSTED_ORGS or org in self.TRUSTED_ORGS:
             trust_score += 30
@@ -459,7 +525,7 @@ class SourceTrustAnalyzer:
             ))
 
         # Check download count
-        downloads = model_info.get('downloads', 0)
+        downloads = model_info.get('downloads') or 0
         if downloads > 100000:
             trust_score += 15
         elif downloads > 10000:
@@ -496,7 +562,9 @@ class SourceTrustAnalyzer:
                 pass
 
         # Check for license
-        license_info = model_info.get('license', '')
+        license_info = model_info.get('license') or ''
+        if isinstance(license_info, list):
+            license_info = ', '.join(map(str, license_info))
         if license_info and license_info != 'unknown':
             trust_score += 5
         else:
@@ -522,7 +590,17 @@ class SourceTrustAnalyzer:
             response = requests.get(api_url, timeout=10)
 
             if response.status_code == 200:
-                return response.json()
+                data = response.json()
+                # Map HuggingFace API field names to the keys analyze() expects
+                if 'createdAt' in data and 'created_at' not in data:
+                    data['created_at'] = data['createdAt']
+                if 'license' not in data:
+                    card_license = (data.get('cardData') or {}).get('license')
+                    tag_license = next((t.split(':', 1)[1] for t in data.get('tags', [])
+                                        if isinstance(t, str) and t.startswith('license:')), None)
+                    if card_license or tag_license:
+                        data['license'] = card_license or tag_license
+                return data
             else:
                 return {'error': f'HTTP {response.status_code}'}
 
@@ -576,5 +654,5 @@ class WeightAnomalyDetector:
 
 
 if __name__ == "__main__":
-    print("ModelGuard Advanced Analyzers Module (Fixed)")
+    print("ModelGuard Advanced Analyzers Module")
     print("Use with modelguard_core.py")
