@@ -4,6 +4,7 @@ Professional security reports in multiple formats
 """
 
 import json
+from html import escape
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -284,13 +285,18 @@ class ReportGenerator:
         return "\n".join(lines)
 
     def generate_html_report(self, scan_result, ai_analysis: Optional[Any] = None) -> str:
-        """Generate HTML report"""
+        """Generate HTML report.
+
+        All model-derived text is HTML-escaped: findings can contain strings taken
+        from untrusted model files, which must not run as markup in the report.
+        """
+        e = lambda v: escape(str(v))
 
         html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>ModelGuard Security Report - {scan_result.model_name}</title>
+    <title>ModelGuard Security Report - {e(scan_result.model_name)}</title>
     <style>
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -339,6 +345,7 @@ class ReportGenerator:
         .finding.HIGH {{ border-left-color: #fd7e14; }}
         .finding.MEDIUM {{ border-left-color: #ffc107; }}
         .finding.LOW {{ border-left-color: #28a745; }}
+        .finding.INFO {{ border-left-color: #17a2b8; }}
         .badge {{
             display: inline-block;
             padding: 4px 8px;
@@ -376,7 +383,7 @@ class ReportGenerator:
 <body>
     <div class="header">
         <h1>ModelGuard Security Report</h1>
-        <p>{scan_result.model_name}</p>
+        <p>{e(scan_result.model_name)}</p>
         <p>Scanned: {scan_result.scan_timestamp}</p>
     </div>
 
@@ -417,12 +424,12 @@ class ReportGenerator:
             html += f"""
     <div class="section">
         <h2>AI Analysis</h2>
-        <p>{" ".join(str(ai_analysis.summary).split()[:100])}...</p>
+        <p>{e(" ".join(str(ai_analysis.summary).split()[:100]))}</p>
         <h3>Recommendations</h3>
         <ul>
 """
             for rec in ai_analysis.recommendations:
-                html += f"            <li>{rec}</li>\n"
+                html += f"            <li>{e(rec)}</li>\n"
 
             html += """        </ul>
     </div>
@@ -444,15 +451,15 @@ class ReportGenerator:
                 for finding in severity_findings:
                     html += f"""
         <div class="finding {severity}">
-            <h4>{finding.title}</h4>
-            <p><strong>Category:</strong> {finding.category}</p>
-            <p>{finding.description}</p>
+            <h4>{e(finding.title)}</h4>
+            <p><strong>Category:</strong> {e(finding.category)}</p>
+            <p>{e(finding.description)}</p>
 """
                     if finding.evidence:
-                        html += f"            <p><strong>Evidence:</strong> <code>{finding.evidence[:200]}</code></p>\n"
+                        html += f"            <p><strong>Evidence:</strong> <code>{e(finding.evidence[:200])}</code></p>\n"
 
                     if finding.recommendation:
-                        html += f"            <p><strong>Recommendation:</strong> {finding.recommendation}</p>\n"
+                        html += f"            <p><strong>Recommendation:</strong> {e(finding.recommendation)}</p>\n"
 
                     html += "        </div>\n"
 
@@ -477,7 +484,7 @@ class ReportGenerator:
 </body>
 </html>
 """.format(
-            scan_result.model_path,
+            e(scan_result.model_path),
             scan_result.file_format.upper(),
             scan_result.file_size / (1024 * 1024),
             scan_result.file_hash_sha256,

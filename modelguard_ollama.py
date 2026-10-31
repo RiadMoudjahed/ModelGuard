@@ -1,5 +1,5 @@
 """
-ModelGuard - AI-Powered Analysis Engine (FIXED v2)
+ModelGuard - AI-Powered Analysis Engine
 Uses local Ollama for deep security analysis
 Enhanced diagnostics and connection handling
 """
@@ -81,9 +81,10 @@ class OllamaAnalyzer:
                 models = data.get('models', [])
 
                 if not models:
+                    suggested = self.model if self.model != "auto" else "qwen2.5:0.5b"
                     self.error_message = (
                         f"No models installed in Ollama.\n"
-                        f"Install a model with: ollama pull {self.model}"
+                        f"Install a model with: ollama pull {suggested}"
                     )
                     self._log(f"✗ No models found")
                     self.available = False
@@ -163,7 +164,8 @@ class OllamaAnalyzer:
                 "Troubleshooting:\n"
                 "1. Check if Ollama is running: ps aux | grep ollama\n"
                 "2. Start Ollama: ollama serve\n"
-                "3. Check if running on different port: ollama serve --port 11435\n"
+                "3. If Ollama uses a different address, pass it with --ollama-url\n"
+                "   (the server address is set with OLLAMA_HOST, e.g. OLLAMA_HOST=127.0.0.1:11435 ollama serve)\n"
                 "4. Test manually: curl http://localhost:11434/api/tags"
             )
             self._log(f"✗ Connection error")
@@ -211,7 +213,7 @@ class OllamaAnalyzer:
                         f"Error: {error_data.get('error', 'Model not found')}\n"
                         f"Install with: ollama pull {self.model}"
                     )
-                except:
+                except ValueError:
                     self.error_message = f"Model '{self.model}' not found (404)"
                 self._log(f"✗ Model not found (404)")
                 self.available = False
@@ -358,13 +360,14 @@ Respond ONLY with the JSON object, no additional text."""
             return result.get('response', '')
 
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
+            status = e.response.status_code if e.response is not None else None
+            if status == 404:
                 raise Exception(
                     f"Ollama API error (404). Check your Ollama version and model availability.\n"
                     f"Tried: {url}"
                 )
             else:
-                raise Exception(f"HTTP {e.response.status_code}: {str(e)}")
+                raise Exception(f"HTTP {status}: {str(e)}")
         except requests.exceptions.ConnectionError:
             raise Exception("Cannot connect to Ollama during generation")
         except requests.exceptions.Timeout:
@@ -475,12 +478,20 @@ class ThreatIntelligence:
 
     KNOWN_CVES = {
         'pickle': [
-            'CVE-2022-45061: Pickle module arbitrary code execution',
-            'CVE-2023-XXXX: PyTorch model poisoning vulnerability'
+            'CVE-2024-3568: Hugging Face Transformers checkpoint pickle deserialization RCE',
+        ],
+        'pytorch': [
+            'CVE-2025-32434: PyTorch torch.load(weights_only=True) remote code execution (fixed in 2.6.0)',
+            'CVE-2024-3568: Hugging Face Transformers checkpoint pickle deserialization RCE',
+        ],
+        'gguf': [
+            'CVE-2024-34359: llama-cpp-python Jinja2 chat template injection (RCE via GGUF metadata)',
+        ],
+        'keras': [
+            'CVE-2024-3660: Keras Lambda layer arbitrary code injection when loading models',
         ],
         'tensorflow': [
-            'CVE-2021-37678: TensorFlow SavedModel arbitrary code execution',
-            'CVE-2022-23578: TensorFlow Grappler vulnerability'
+            'CVE-2021-37678: TensorFlow/Keras arbitrary code execution via YAML model deserialization',
         ]
     }
 

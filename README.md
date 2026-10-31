@@ -62,10 +62,10 @@ git clone https://github.com/RiadMoudjahed/ModelGuard.git
 cd ModelGuard
 
 # Install Python dependencies
-pip install requests
+pip install -r requirements.txt
 
 # (Optional) Install Ollama for AI-powered analysis
-# Visit: https://ollama.ai
+# Visit: https://ollama.com
 # Then: ollama pull qwen2.5
 ```
 
@@ -94,7 +94,7 @@ python modelguard_cli.py scan ./models/ --ai-analysis
 
 | Format | Extensions | Features |
 |--------|-----------|----------|
-| **PyTorch** | `.pt`, `.pth`, `.bin`, `.ckpt` | Pickle exploit detection, binary analysis |
+| **PyTorch** | `.pt`, `.pth`, `.bin`, `.ckpt` | Pickle exploit detection (legacy and ZIP-based checkpoints), binary analysis |
 | **GGUF** | `.gguf` | Specialized GGUF parser, metadata validation |
 | **SafeTensors** | `.safetensors` | Safe format validation, metadata checks |
 | **ONNX** | `.onnx` | Binary analysis, format verification |
@@ -155,7 +155,7 @@ ModelGuard provides clear risk scores to guide your decisions:
 
 ```bash
 # 1. Install Ollama
-# Visit: https://ollama.ai
+# Visit: https://ollama.com
 
 # 2. Pull a model (choose one)
 ollama pull qwen2.5:0.5b      # Fast & lightweight (< 1GB)
@@ -291,15 +291,15 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       
       - name: Setup Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.12'
       
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
       
       - name: Scan models
         run: |
@@ -477,13 +477,11 @@ Contributions are welcome! Here's how you can help:
 ```bash
 # Clone repository
 git clone https://github.com/RiadMoudjahed/ModelGuard.git
-cd modelguard
+cd ModelGuard
 
-# Install dev dependencies
-pip install -r requirements-dev.txt
-
-# Run tests
-python -m pytest tests/
+# Install dependencies and dev tools
+pip install -r requirements.txt
+pip install pytest black mypy
 
 # Format code
 black modelguard*.py
@@ -512,9 +510,11 @@ MIT License - see [LICENSE](LICENSE) file for details
 ## 📚 Additional Resources
 
 ### External Resources
-- [Pickle Security (CVE-2022-45061)](https://nvd.nist.gov/vuln/detail/CVE-2022-45061)
+- [Python `pickle` security warning](https://docs.python.org/3/library/pickle.html)
+- [PyTorch `torch.load` RCE (CVE-2025-32434)](https://nvd.nist.gov/vuln/detail/CVE-2025-32434)
+- [GGUF chat template injection (CVE-2024-34359)](https://nvd.nist.gov/vuln/detail/CVE-2024-34359)
 - [AI Model Security Best Practices](https://arxiv.org/abs/2302.04237)
-- [GGUF Format Specification](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)
+- [GGUF Format Specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 - [Ollama Documentation](https://github.com/ollama/ollama)
 
 ---

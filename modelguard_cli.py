@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ModelGuard - AI Model Security Scanner
-Complete CLI interface (FIXED - Auto-detects Ollama models)
+Command-line interface
 """
 
 import sys
@@ -29,7 +29,7 @@ class ModelGuardCLI:
     """Main CLI application"""
 
     def __init__(self):
-        self.version = "1.0.0"
+        self.version = "1.0.1"
         self.scanner = None
         self.report_gen = ReportGenerator()
         self.ollama = None
@@ -43,7 +43,7 @@ class ModelGuardCLI:
             print(f"ModelGuard v{self.version}")
             return 0
 
-        if not args.model:
+        if not args.command or not args.model:
             parser.print_help()
             return 1
 
@@ -56,10 +56,10 @@ class ModelGuardCLI:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  modelguard scan model.pt
-  modelguard scan model.gguf --verbose --ai-analysis
-  modelguard scan model.bin --output report.txt --format text
-  modelguard scan model.safetensors --format json -o report.json
+  python modelguard_cli.py scan model.pt
+  python modelguard_cli.py scan model.gguf --verbose --ai-analysis
+  python modelguard_cli.py scan model.bin --output report.txt --format text
+  python modelguard_cli.py scan model.safetensors --format json -o report.json
 
 Supported Formats:
   PyTorch: .pt, .pth, .bin, .ckpt
@@ -72,6 +72,7 @@ Supported Formats:
 
         parser.add_argument(
             'command',
+            nargs='?',
             choices=['scan'],
             help='Command to execute'
         )

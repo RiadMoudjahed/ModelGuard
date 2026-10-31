@@ -6,8 +6,9 @@ A comprehensive security analysis tool for AI/ML models
 import os
 import sys
 import hashlib
-import pickle
 import pickletools
+import zipfile
+import math
 import io
 import json
 import struct
@@ -95,17 +96,15 @@ class PickleExploitDetector:
         self.findings = []
 
         try:
-            with open(file_path, 'rb') as f:
-                data = f.read()
+            for data in self._load_pickle_streams(file_path):
+                # Analyze opcodes
+                self._analyze_opcodes(data)
 
-            # Analyze opcodes
-            self._analyze_opcodes(data)
+                # Check for embedded code
+                self._check_embedded_code(data)
 
-            # Check for embedded code
-            self._check_embedded_code(data)
-
-            # Analyze pickle structure
-            self._analyze_structure(data)
+                # Analyze pickle structure
+                self._analyze_structure(data)
 
         except Exception as e:
             self.findings.append(SecurityFinding(
@@ -118,13 +117,49 @@ class PickleExploitDetector:
 
         return self.findings
 
+    @staticmethod
+    def _load_pickle_streams(file_path: str) -> List[bytes]:
+        """Return the pickle byte streams contained in a file.
+
+        PyTorch >= 1.6 saves models as ZIP archives with the pickle stored in
+        ``<archive>/data.pkl``; older files and plain .pkl files are raw pickles.
+        """
+        if zipfile.is_zipfile(file_path):
+            streams = []
+            with zipfile.ZipFile(file_path) as zf:
+                for name in zf.namelist():
+                    if name.endswith('.pkl'):
+                        streams.append(zf.read(name))
+            return streams
+
+        with open(file_path, 'rb') as f:
+            return [f.read()]
+
     def _analyze_opcodes(self, data: bytes):
         """Analyze pickle opcodes for suspicious patterns"""
         try:
-            opcodes = list(pickletools.genops(data))
+            # Recent string pushes, used to resolve STACK_GLOBAL (protocol 4+),
+            # which takes module and name from the stack instead of an argument.
+            recent_strings: List[str] = []
 
-            for opcode, arg, pos in opcodes:
+            for opcode, arg, pos in pickletools.genops(data):
                 opname = opcode.name
+
+                if opname in ('SHORT_BINUNICODE', 'BINUNICODE', 'BINUNICODE8',
+                              'UNICODE', 'SHORT_BINSTRING', 'BINSTRING', 'STRING'):
+                    recent_strings = (recent_strings + [str(arg)])[-2:]
+                    continue
+
+                if opname == 'STACK_GLOBAL':
+                    if len(recent_strings) == 2:
+                        arg = f"{recent_strings[0]} {recent_strings[1]}"
+                        opname = 'GLOBAL'
+                    else:
+                        arg = None
+                elif opname in ('MEMOIZE', 'BINPUT', 'LONG_BINPUT', 'PUT'):
+                    continue  # memo ops sit between the strings and STACK_GLOBAL
+                else:
+                    recent_strings = []
 
                 # Check for dangerous opcodes
                 if opname in self.DANGEROUS_OPCODES:
@@ -141,9 +176,10 @@ class PickleExploitDetector:
     def _check_dangerous_opcode(self, opname: str, arg: Any, pos: int):
         """Check if a dangerous opcode is being used maliciously"""
         if opname == 'GLOBAL' and arg:
-            module, func = arg.split(' ')
+            module, _, func = str(arg).partition(' ')
+            root_module = module.split('.')[0]
 
-            if module in self.SUSPICIOUS_MODULES:
+            if module in self.SUSPICIOUS_MODULES or root_module in self.SUSPICIOUS_MODULES:
                 self.findings.append(SecurityFinding(
                     severity=SeverityLevel.CRITICAL,
                     category="Pickle Exploit",
@@ -197,8 +233,8 @@ class PickleExploitDetector:
         """Analyze overall pickle structure"""
         try:
             # Check pickle protocol version
-            if len(data) > 0:
-                protocol = data[0]
+            if len(data) > 1 and data[0] == 0x80:  # PROTO opcode
+                protocol = data[1]
                 if protocol > 5:
                     self.findings.append(SecurityFinding(
                         severity=SeverityLevel.LOW,
@@ -256,41 +292,94 @@ class BinaryAnalyzer:
     def _check_header(self, header: bytes, expected_format: str):
         """Verify file header matches expected format"""
         magic_numbers = {
-            'pytorch': [b'\x80\x02', b'\x80\x03', b'\x80\x04'],  # Pickle protocols
+            # Raw pickle (protocol 2-5) or ZIP archive (PyTorch >= 1.6)
+            'pytorch': [b'\x80\x02', b'\x80\x03', b'\x80\x04', b'\x80\x05', b'PK\x03\x04'],
             'gguf': [b'GGUF'],
-            'safetensors': [b'{"'],  # JSON header
         }
 
-        if expected_format in magic_numbers:
+        if expected_format == 'safetensors':
+            # 8-byte little-endian header length followed by a JSON object
+            valid = len(header) > 8 and header[8:9] == b'{'
+        elif expected_format in magic_numbers:
             valid = any(header.startswith(magic) for magic in magic_numbers[expected_format])
-            if not valid:
-                self.findings.append(SecurityFinding(
-                    severity=SeverityLevel.MEDIUM,
-                    category="File Format",
-                    title="Invalid File Header",
-                    description=f"File header doesn't match expected {expected_format} format",
-                    recommendation="File may be corrupted or mislabeled"
-                ))
+        else:
+            return
+
+        if not valid:
+            self.findings.append(SecurityFinding(
+                severity=SeverityLevel.MEDIUM,
+                category="File Format",
+                title="Invalid File Header",
+                description=f"File header doesn't match expected {expected_format} format",
+                recommendation="File may be corrupted or mislabeled"
+            ))
 
     def _check_embedded_executables(self, data: bytes):
-        """Check for embedded executable code"""
-        executable_signatures = [
-            (b'MZ', "Windows PE executable"),
-            (b'\x7fELF', "Linux ELF executable"),
-            (b'\xfe\xed\xfa', "macOS Mach-O executable"),
-            (b'#!', "Shell script")
-        ]
+        """Check for embedded executable code.
 
-        for signature, desc in executable_signatures:
-            if signature in data:
-                self.findings.append(SecurityFinding(
-                    severity=SeverityLevel.CRITICAL,
-                    category="Embedded Executable",
-                    title=f"Embedded Executable Detected: {desc}",
-                    description="Model file contains embedded executable code",
-                    evidence=f"Signature: {signature.hex()}",
-                    recommendation="Highly suspicious. This model should not be loaded."
-                ))
+        Short signatures such as ``MZ`` occur by chance in any large binary, so a
+        match is only reported as CRITICAL when a valid header structure follows.
+        Unverified matches are reported as INFO.
+        """
+        verified = []
+        unverified = []
+
+        # Windows PE: "MZ" + e_lfanew offset pointing at "PE\0\0"
+        for m in re.finditer(rb'MZ', data):
+            off = m.start()
+            if off + 0x40 <= len(data):
+                e_lfanew = struct.unpack_from('<I', data, off + 0x3C)[0]
+                pe = off + e_lfanew
+                if 0 < e_lfanew < 0x1000 and data[pe:pe + 4] == b'PE\x00\x00':
+                    verified.append(("Windows PE executable", off))
+                    break
+        else:
+            if b'MZ' in data:
+                unverified.append("Windows PE (MZ)")
+
+        # Linux ELF: magic + valid class (1/2), data encoding (1/2) and version (1)
+        for m in re.finditer(rb'\x7fELF', data):
+            ei = data[m.start() + 4:m.start() + 7]
+            if len(ei) == 3 and ei[0] in (1, 2) and ei[1] in (1, 2) and ei[2] == 1:
+                verified.append(("Linux ELF executable", m.start()))
+                break
+        else:
+            if b'\x7fELF' in data:
+                unverified.append("Linux ELF")
+
+        # macOS Mach-O: full 4-byte magic (32/64-bit, both byte orders)
+        for magic in (b'\xfe\xed\xfa\xce', b'\xfe\xed\xfa\xcf',
+                      b'\xce\xfa\xed\xfe', b'\xcf\xfa\xed\xfe'):
+            idx = data.find(magic)
+            if idx >= 0:
+                verified.append(("macOS Mach-O executable", idx))
+                break
+
+        # Shell script: shebang followed by an interpreter path
+        m = re.search(rb'#!\s*/(?:usr/)?(?:local/)?bin/(?:env\s+)?(?:ba|z|da|k)?sh\b|#!\s*/(?:usr/)?bin/(?:env\s+)?(?:python|perl|ruby)', data)
+        if m:
+            verified.append(("Shell/interpreter script", m.start()))
+
+        for desc, offset in verified:
+            self.findings.append(SecurityFinding(
+                severity=SeverityLevel.CRITICAL,
+                category="Embedded Executable",
+                title=f"Embedded Executable Detected: {desc}",
+                description="Model file contains embedded executable code with a valid header",
+                evidence=f"Offset: {offset}",
+                recommendation="Highly suspicious. This model should not be loaded."
+            ))
+
+        if unverified:
+            self.findings.append(SecurityFinding(
+                severity=SeverityLevel.INFO,
+                category="Embedded Executable",
+                title="Executable Signature Bytes (Unverified)",
+                description="Executable signature bytes were found, but no valid header structure follows them. "
+                            "This is common in random binary weight data.",
+                evidence=f"Signatures: {', '.join(unverified)}",
+                recommendation="Likely a coincidental byte match; no action needed unless other findings exist."
+            ))
 
     def _check_network_indicators(self, data: bytes):
         """Check for network-related indicators"""
@@ -334,7 +423,6 @@ class BinaryAnalyzer:
             freq[byte] += 1
 
         # Calculate entropy
-        import math
         total = sum(freq)
         entropy = 0
         for count in freq:
@@ -383,9 +471,14 @@ class FileFormatHandler:
 
             if header.startswith(b'GGUF'):
                 return 'gguf'
-            elif header.startswith(b'{"') or header.startswith(b'{'):
+            elif header[8:9] == b'{':
+                # safetensors: 8-byte header length followed by JSON
                 return 'safetensors'
-            elif b'pytorch' in header or header[0] in [0x80]:
+            elif header.startswith(b'PK\x03\x04'):
+                # ZIP archive: PyTorch >= 1.6 checkpoints (other zips keep their extension)
+                if detected in ('pytorch', 'pickle', 'unknown'):
+                    return 'pytorch'
+            elif header[:1] == b'\x80' and detected != 'pickle':
                 return 'pytorch'
 
         except Exception:
@@ -398,8 +491,12 @@ class FileFormatHandler:
         """Get basic file information"""
         stat = os.stat(file_path)
 
+        # Hash in chunks so multi-GB models are not loaded into memory
+        sha256 = hashlib.sha256()
         with open(file_path, 'rb') as f:
-            file_hash = hashlib.sha256(f.read()).hexdigest()
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                sha256.update(chunk)
+        file_hash = sha256.hexdigest()
 
         return {
             'size': stat.st_size,

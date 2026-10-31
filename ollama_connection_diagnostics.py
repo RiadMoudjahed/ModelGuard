@@ -29,7 +29,7 @@ def test_ollama_connection(base_url="http://localhost:11434", model="auto"):
             try:
                 version_data = response.json()
                 print(f"  Version: {version_data.get('version', 'unknown')}")
-            except:
+            except ValueError:
                 print(f"  Response: {response.text[:100]}")
     except requests.exceptions.ConnectionError:
         print("  ✗ FAILED: Cannot connect to Ollama server")
@@ -122,7 +122,7 @@ def test_ollama_connection(base_url="http://localhost:11434", model="auto"):
             try:
                 error_data = response.json()
                 print(f"  Error: {error_data.get('error', 'unknown')}")
-            except:
+            except ValueError:
                 pass
             print(f"  Solution: ollama pull {model}")
             return False
@@ -172,7 +172,7 @@ def main():
         print(f"2. Pull model: ollama pull {model}")
         print(f"3. Test model: ollama run {model}")
         print("4. Check firewall/antivirus settings")
-        print("5. Try different model: python this_script.py llama3.1")
+        print("5. Try different model: python ollama_connection_diagnostics.py llama3.1")
     print("=" * 70)
 
     return 0 if success else 1
